@@ -1,4 +1,6 @@
 mod app;
+#[allow(dead_code)]
+mod clean;
 mod collect;
 pub mod splash;
 mod ui;

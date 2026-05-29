@@ -18,11 +18,6 @@ use crate::ui;
 #[derive(Clone, Copy, PartialEq)]
 pub enum View {
     Overview,
-    Cpu,
-    Memory,
-    Network,
-    Disk,
-    Thermal,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -32,12 +27,7 @@ pub enum AppState {
 }
 
 pub const MENU_ITEMS: &[(&str, &str, View)] = &[
-    ("Overview", "Full system dashboard",      View::Overview),
-    ("CPU",      "Processor load per core",    View::Cpu),
-    ("Memory",   "RAM and swap usage",         View::Memory),
-    ("Network",  "Traffic and bandwidth",      View::Network),
-    ("Disk",     "Storage space and I/O",      View::Disk),
-    ("Thermal",  "Temperatures and battery",   View::Thermal),
+    ("Overview", "Full system dashboard", View::Overview),
 ];
 
 pub struct App {
@@ -51,7 +41,6 @@ pub struct App {
     pub power: PowerStats,
     pub health: f64,
     pub state: AppState,
-    pub view: View,
     pub menu_idx: usize,
 
     cpu_raw: Option<RawCpuStats>,
@@ -72,7 +61,6 @@ impl App {
             power: PowerStats::default(),
             health: 100.0,
             state: AppState::Menu,
-            view: View::Overview,
             menu_idx: 0,
             cpu_raw: None,
             net_raw: None,
@@ -123,43 +111,32 @@ impl App {
     }
 
     fn compute_health(&self) -> f64 {
-        let mut scores: Vec<f64> = Vec::new();
+        let disk_pcts: Vec<f64> = self
+            .disks
+            .iter()
+            .filter(|d| d.total_bytes > 0)
+            .map(|d| d.used_bytes as f64 / d.total_bytes as f64 * 100.0)
+            .collect();
 
-        scores.push(100.0 - self.cpu.total_pct);
+        let max_temp = self
+            .thermal
+            .sensors
+            .iter()
+            .map(|s| s.temp_c)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let max_temp = if max_temp.is_infinite() {
+            0.0
+        } else {
+            max_temp
+        };
 
-        if self.mem.total_kb > 0 {
-            let pct = self.mem.used_kb as f64 / self.mem.total_kb as f64 * 100.0;
-            scores.push(100.0 - pct);
-        }
+        let mem_pct = self.mem.used_ratio() * 100.0;
 
-        for disk in &self.disks {
-            if disk.total_bytes > 0 {
-                let pct = disk.used_bytes as f64 / disk.total_bytes as f64 * 100.0;
-                scores.push(100.0 - pct);
-            }
-        }
-
-        for sensor in &self.thermal.sensors {
-            let score = if sensor.temp_c <= 60.0 {
-                100.0
-            } else if sensor.temp_c >= 90.0 {
-                0.0
-            } else {
-                (90.0 - sensor.temp_c) / 30.0 * 100.0
-            };
-            scores.push(score);
-        }
-
-        if scores.is_empty() {
-            return 100.0;
-        }
-
-        scores.iter().sum::<f64>() / scores.len() as f64
+        compute_health_score(self.cpu.total_pct, mem_pct, &disk_pcts, max_temp)
     }
 
     fn enter_view(&mut self, idx: usize) {
         self.menu_idx = idx;
-        self.view = MENU_ITEMS[idx].2;
         self.state = AppState::Dashboard;
     }
 
@@ -184,15 +161,13 @@ impl App {
                         match self.state {
                             AppState::Menu => match key.code {
                                 KeyCode::Char('q') => return Ok(()),
-                                KeyCode::Up | KeyCode::Char('k') => {
-                                    if self.menu_idx > 0 {
-                                        self.menu_idx -= 1;
-                                    }
+                                KeyCode::Up | KeyCode::Char('k') if self.menu_idx > 0 => {
+                                    self.menu_idx -= 1;
                                 }
-                                KeyCode::Down | KeyCode::Char('j') => {
-                                    if self.menu_idx + 1 < MENU_ITEMS.len() {
-                                        self.menu_idx += 1;
-                                    }
+                                KeyCode::Down | KeyCode::Char('j')
+                                    if self.menu_idx + 1 < MENU_ITEMS.len() =>
+                                {
+                                    self.menu_idx += 1;
                                 }
                                 KeyCode::Enter => {
                                     self.enter_view(self.menu_idx);
@@ -220,5 +195,71 @@ impl App {
                 last_tick = Instant::now();
             }
         }
+    }
+}
+
+/// Pure health-score computation, usable in tests without a live system.
+///
+/// Inputs are all percentages (0–100).  Returns a score in [0, 100]:
+/// green > 70, yellow 40–70, red < 40.
+pub fn compute_health_score(cpu_pct: f64, mem_pct: f64, disk_pcts: &[f64], max_temp_c: f64) -> f64 {
+    let mut scores: Vec<f64> = Vec::new();
+
+    scores.push((100.0 - cpu_pct).clamp(0.0, 100.0));
+    scores.push((100.0 - mem_pct).clamp(0.0, 100.0));
+
+    for &pct in disk_pcts {
+        scores.push((100.0 - pct).clamp(0.0, 100.0));
+    }
+
+    if max_temp_c > 0.0 {
+        let temp_score = if max_temp_c <= 60.0 {
+            100.0
+        } else if max_temp_c >= 90.0 {
+            0.0
+        } else {
+            (90.0 - max_temp_c) / 30.0 * 100.0
+        };
+        scores.push(temp_score);
+    }
+
+    if scores.is_empty() {
+        return 100.0;
+    }
+
+    scores.iter().sum::<f64>() / scores.len() as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_score_bounds() {
+        // sweep across the full input range and confirm output stays in [0, 100]
+        for cpu in [0.0, 50.0, 100.0] {
+            for mem in [0.0, 50.0, 100.0] {
+                for disk in [&[][..], &[0.0_f64][..], &[100.0_f64][..]] {
+                    for temp in [0.0, 60.0, 90.0, 100.0] {
+                        let s = compute_health_score(cpu, mem, disk, temp);
+                        assert!(
+                            (0.0..=100.0).contains(&s),
+                            "out of bounds: cpu={cpu} mem={mem} temp={temp} → {s}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn health_score_thresholds() {
+        // Idle system: low cpu, low mem, no disk pressure, cool temp → green (>70)
+        let quiet = compute_health_score(5.0, 20.0, &[30.0], 40.0);
+        assert!(quiet > 70.0, "expected green, got {quiet}");
+
+        // Stressed system: high everything → red (<40)
+        let stressed = compute_health_score(95.0, 90.0, &[95.0], 88.0);
+        assert!(stressed < 40.0, "expected red, got {stressed}");
     }
 }

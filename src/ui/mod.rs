@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppState, View};
+use crate::app::{App, AppState};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     match app.state {
@@ -17,21 +17,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn draw_dashboard(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    // Reserve one line at the bottom for the nav hint
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    match app.view {
-        View::Overview => draw_overview(frame, app, rows[0]),
-        View::Cpu      => widgets::render_cpu(frame, app, rows[0]),
-        View::Memory   => widgets::render_memory(frame, app, rows[0]),
-        View::Network  => widgets::render_network(frame, app, rows[0]),
-        View::Disk     => widgets::render_disk(frame, app, rows[0]),
-        View::Thermal  => widgets::render_thermal_full(frame, app, rows[0]),
-    }
-
+    draw_overview(frame, app, rows[0]);
     widgets::render_dashboard_footer(frame, rows[1]);
 }
 

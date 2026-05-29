@@ -12,27 +12,37 @@ use crate::splash;
 // ── Launch / menu screen ────────────────────────────────────────────────────
 
 pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
+    // Trim leading/trailing blank lines from the art constant so the height
+    // matches the actual content (5 lines) rather than the padded raw-string
+    // literal (7 lines).  This frees up 3 rows for the menu on small terminals.
+    let art = splash::ART.trim_matches('\n');
+    let art_height = art.lines().count() as u16;
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // ASCII art (5 lines + blank top/bottom)
-            Constraint::Length(1),  // tagline
-            Constraint::Length(1),  // spacer
-            Constraint::Min(0),     // menu list
-            Constraint::Length(1),  // footer hints
+            Constraint::Length(art_height), // ASCII art
+            Constraint::Length(1),          // tagline
+            Constraint::Min(1),             // menu list (at least 1 row always)
+            Constraint::Length(1),          // footer hints
         ])
         .split(area);
 
     // ASCII art
     f.render_widget(
-        Paragraph::new(splash::ART).style(Style::default().fg(Color::Cyan)),
+        Paragraph::new(art).style(Style::default().fg(Color::Cyan)),
         rows[0],
     );
 
     // Tagline
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("owl", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "owl",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  ·  system monitor", Style::default().fg(Color::DarkGray)),
         ])),
         rows[1],
@@ -47,11 +57,15 @@ pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::styled(
                         "▶ ",
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("{}. {:<10}", i + 1, label),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(*desc, Style::default().fg(Color::White)),
                 ])
@@ -68,22 +82,28 @@ pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    f.render_widget(Paragraph::new(Text::from(items)), rows[3]);
+    f.render_widget(Paragraph::new(Text::from(items)), rows[2]);
 
     // Footer
     let footer = Paragraph::new(Line::from(vec![
-        hint("↑↓"), sep(), hint("Enter"), sep(), hint("Q quit"),
+        hint("↑↓"),
+        sep(),
+        hint("Enter"),
+        sep(),
+        hint("Q quit"),
     ]));
-    f.render_widget(footer, rows[4]);
+    f.render_widget(footer, rows[3]);
 }
 
 // ── Dashboard footer ────────────────────────────────────────────────────────
 
 pub fn render_dashboard_footer(f: &mut Frame, area: Rect) {
     let footer = Paragraph::new(Line::from(vec![
-        hint("Esc"), Span::styled(" menu", Style::default().fg(Color::DarkGray)),
+        hint("Esc"),
+        Span::styled(" menu", Style::default().fg(Color::DarkGray)),
         sep(),
-        hint("Q"), Span::styled(" quit", Style::default().fg(Color::DarkGray)),
+        hint("Q"),
+        Span::styled(" quit", Style::default().fg(Color::DarkGray)),
     ]));
     f.render_widget(footer, area);
 }
@@ -100,37 +120,57 @@ fn sep() -> Span<'static> {
 
 // Blue → Yellow → Red for CPU load
 fn cpu_color(pct: f64) -> Color {
-    if pct < 60.0 { Color::LightBlue }
-    else if pct < 85.0 { Color::Yellow }
-    else { Color::Red }
+    if pct < 60.0 {
+        Color::LightBlue
+    } else if pct < 85.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
 }
 
 // Cyan → Yellow → Red for memory
 fn mem_color(pct: f64) -> Color {
-    if pct < 70.0 { Color::Cyan }
-    else if pct < 90.0 { Color::Yellow }
-    else { Color::Red }
+    if pct < 70.0 {
+        Color::Cyan
+    } else if pct < 90.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
 }
 
 // LightBlue → Yellow → Red for disk
 fn disk_color(pct: f64) -> Color {
-    if pct < 75.0 { Color::LightBlue }
-    else if pct < 90.0 { Color::Yellow }
-    else { Color::Red }
+    if pct < 75.0 {
+        Color::LightBlue
+    } else if pct < 90.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
 }
 
 // Green → Yellow → Red for health (semantic: green = good)
 fn health_color(score: f64) -> Color {
-    if score > 70.0 { Color::Green }
-    else if score > 40.0 { Color::Yellow }
-    else { Color::Red }
+    if score > 70.0 {
+        Color::Green
+    } else if score > 40.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
 }
 
 // Green → Yellow → Red for temperature (semantic: green = cool)
 fn temp_color(temp_c: f64) -> Color {
-    if temp_c < 60.0 { Color::Green }
-    else if temp_c < 80.0 { Color::Yellow }
-    else { Color::Red }
+    if temp_c < 60.0 {
+        Color::Green
+    } else if temp_c < 80.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
 }
 
 fn fmt_bytes(bytes: u64) -> String {
@@ -333,10 +373,7 @@ pub fn render_thermal(f: &mut Frame, app: &App, area: Rect) {
             .map(|s| {
                 let color = temp_color(s.temp_c);
                 Line::from(vec![
-                    Span::styled(
-                        format!("{:5.1}°C", s.temp_c),
-                        Style::default().fg(color),
-                    ),
+                    Span::styled(format!("{:5.1}°C", s.temp_c), Style::default().fg(color)),
                     Span::raw(format!("  {}", s.name)),
                 ])
             })
@@ -346,14 +383,6 @@ pub fn render_thermal(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
-pub fn render_thermal_full(f: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(area);
-    render_thermal(f, app, rows[0]);
-    render_health(f, app, rows[1]);
-}
 
 pub fn render_health(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
