@@ -98,24 +98,39 @@ fn sep() -> Span<'static> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn pct_color(pct: f64) -> Color {
-    if pct < 50.0 {
-        Color::Green
-    } else if pct < 80.0 {
-        Color::Yellow
-    } else {
-        Color::Red
-    }
+// Blue → Yellow → Red for CPU load
+fn cpu_color(pct: f64) -> Color {
+    if pct < 60.0 { Color::LightBlue }
+    else if pct < 85.0 { Color::Yellow }
+    else { Color::Red }
 }
 
+// Cyan → Yellow → Red for memory
+fn mem_color(pct: f64) -> Color {
+    if pct < 70.0 { Color::Cyan }
+    else if pct < 90.0 { Color::Yellow }
+    else { Color::Red }
+}
+
+// LightBlue → Yellow → Red for disk
+fn disk_color(pct: f64) -> Color {
+    if pct < 75.0 { Color::LightBlue }
+    else if pct < 90.0 { Color::Yellow }
+    else { Color::Red }
+}
+
+// Green → Yellow → Red for health (semantic: green = good)
 fn health_color(score: f64) -> Color {
-    if score > 70.0 {
-        Color::Green
-    } else if score > 40.0 {
-        Color::Yellow
-    } else {
-        Color::Red
-    }
+    if score > 70.0 { Color::Green }
+    else if score > 40.0 { Color::Yellow }
+    else { Color::Red }
+}
+
+// Green → Yellow → Red for temperature (semantic: green = cool)
+fn temp_color(temp_c: f64) -> Color {
+    if temp_c < 60.0 { Color::Green }
+    else if temp_c < 80.0 { Color::Yellow }
+    else { Color::Red }
 }
 
 fn fmt_bytes(bytes: u64) -> String {
@@ -157,7 +172,7 @@ pub fn render_cpu(f: &mut Frame, app: &App, area: Rect) {
     let total_pct = app.cpu.total_pct.clamp(0.0, 100.0) as u16;
     let gauge = Gauge::default()
         .block(Block::default().title(" All "))
-        .gauge_style(Style::default().fg(pct_color(app.cpu.total_pct)))
+        .gauge_style(Style::default().fg(cpu_color(app.cpu.total_pct)))
         .percent(total_pct)
         .label(format!("{:.1}%", app.cpu.total_pct));
     f.render_widget(gauge, cols[0]);
@@ -171,7 +186,7 @@ pub fn render_cpu(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, &pct)| {
             let filled = (pct.clamp(0.0, 100.0) / 100.0 * bar_width as f64) as usize;
             let empty = bar_width - filled;
-            let color = pct_color(pct);
+            let color = cpu_color(pct);
             Line::from(vec![
                 Span::raw(format!("C{:<2} ", i)),
                 Span::styled("█".repeat(filled), Style::default().fg(color)),
@@ -201,7 +216,7 @@ pub fn render_memory(f: &mut Frame, app: &App, area: Rect) {
     };
     let ram_gauge = Gauge::default()
         .block(Block::default().title(" RAM "))
-        .gauge_style(Style::default().fg(pct_color(mem_pct as f64)))
+        .gauge_style(Style::default().fg(mem_color(mem_pct as f64)))
         .percent(mem_pct)
         .label(format!(
             "{} / {}",
@@ -218,7 +233,7 @@ pub fn render_memory(f: &mut Frame, app: &App, area: Rect) {
     };
     let swap_gauge = Gauge::default()
         .block(Block::default().title(" Swap "))
-        .gauge_style(Style::default().fg(pct_color(swap_pct as f64)))
+        .gauge_style(Style::default().fg(mem_color(swap_pct as f64)))
         .percent(swap_pct)
         .label(format!(
             "{} / {}",
@@ -276,7 +291,7 @@ pub fn render_disk(f: &mut Frame, app: &App, area: Rect) {
             };
             let filled = (pct / 100.0 * bar_width as f64) as usize;
             let empty = bar_width - filled;
-            let color = pct_color(pct);
+            let color = disk_color(pct);
             let io_str = if disk.read_bps > 0 || disk.write_bps > 0 {
                 format!(
                     "  R:{} W:{}",
@@ -316,13 +331,7 @@ pub fn render_thermal(f: &mut Frame, app: &App, area: Rect) {
             .sensors
             .iter()
             .map(|s| {
-                let color = if s.temp_c >= 80.0 {
-                    Color::Red
-                } else if s.temp_c >= 60.0 {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                };
+                let color = temp_color(s.temp_c);
                 Line::from(vec![
                     Span::styled(
                         format!("{:5.1}°C", s.temp_c),
