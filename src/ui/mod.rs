@@ -17,43 +17,56 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn draw_dashboard(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    let rows = Layout::default()
+    // Outer: main block + one-line footer outside the border
+    let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    draw_overview(frame, app, rows[0]);
-    widgets::render_dashboard_footer(frame, rows[1]);
-}
+    widgets::render_footer(frame, outer[1]);
 
-fn draw_overview(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let main_block = widgets::make_main_block();
+    let inner = main_block.inner(outer[0]);
+    frame.render_widget(main_block, outer[0]);
+
+    // Inner rows: header | CPU+MEM/DISK | NET+TEMP | BAT/HEALTH
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(4),
-            Constraint::Min(6),
-            Constraint::Min(4),
-            Constraint::Min(5),
+            Constraint::Length(1),  // header status line
+            Constraint::Min(9),     // CPU (left 54%) | MEM+DISK (right 46%)
+            Constraint::Min(4),     // NET (left 54%) | TEMP (right 46%)
+            Constraint::Length(3),  // BAT + HEALTH
         ])
-        .split(area);
+        .split(inner);
 
-    widgets::render_cpu(frame, app, rows[0]);
+    widgets::render_header(frame, app, rows[0]);
 
-    let mid = Layout::default()
+    // Top section split
+    let top_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
         .split(rows[1]);
 
-    widgets::render_memory(frame, app, mid[0]);
-    widgets::render_network(frame, app, mid[1]);
+    widgets::render_cpu(frame, app, top_cols[0]);
 
-    widgets::render_disk(frame, app, rows[2]);
+    // Right column: MEM on top, DISK below
+    let right_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(0)])
+        .split(top_cols[1]);
 
-    let bottom = Layout::default()
+    widgets::render_memory(frame, app, right_rows[0]);
+    widgets::render_disk(frame, app, right_rows[1]);
+
+    // Mid section split
+    let mid_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[3]);
+        .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
+        .split(rows[2]);
 
-    widgets::render_thermal(frame, app, bottom[0]);
-    widgets::render_health(frame, app, bottom[1]);
+    widgets::render_network(frame, app, mid_cols[0]);
+    widgets::render_thermal(frame, app, mid_cols[1]);
+
+    widgets::render_power_health(frame, app, rows[3]);
 }

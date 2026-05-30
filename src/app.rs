@@ -42,6 +42,17 @@ pub struct App {
     pub health: f64,
     pub state: AppState,
     pub menu_idx: usize,
+    pub paused: bool,
+
+    // system info
+    pub hostname: String,
+    pub uptime_secs: u64,
+    pub load_1m: f64,
+    pub load_5m: f64,
+    pub load_15m: f64,
+    pub cpu_model: String,
+    pub iface_name: String,
+    pub load_history: VecDeque<u64>,
 
     cpu_raw: Option<RawCpuStats>,
     net_raw: Option<RawNetStats>,
@@ -50,6 +61,10 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let hostname = crate::collect::system::hostname();
+        let cpu_model = crate::collect::system::cpu_model();
+        let iface_name = crate::collect::system::primary_iface();
+
         Self {
             mem: MemStats::default(),
             cpu: CpuStats::default(),
@@ -60,8 +75,17 @@ impl App {
             thermal: ThermalStats::default(),
             power: PowerStats::default(),
             health: 100.0,
-            state: AppState::Menu,
+            state: AppState::Dashboard,
             menu_idx: 0,
+            paused: false,
+            hostname,
+            uptime_secs: 0,
+            load_1m: 0.0,
+            load_5m: 0.0,
+            load_15m: 0.0,
+            cpu_model,
+            iface_name,
+            load_history: VecDeque::from(vec![0u64; 60]),
             cpu_raw: None,
             net_raw: None,
             disk_io_raw: None,
@@ -95,19 +119,20 @@ impl App {
             self.net_raw = Some(curr);
         }
 
-        if self.net_rx_history.len() >= 60 {
-            self.net_rx_history.pop_front();
-        }
-        self.net_rx_history.push_back(self.net.rx_bps);
-
-        if self.net_tx_history.len() >= 60 {
-            self.net_tx_history.pop_front();
-        }
-        self.net_tx_history.push_back(self.net.tx_bps);
+        push_ring(&mut self.net_rx_history, self.net.rx_bps);
+        push_ring(&mut self.net_tx_history, self.net.tx_bps);
 
         self.thermal = crate::collect::thermal::read().unwrap_or_default();
         self.power = crate::collect::power::read().unwrap_or_default();
         self.health = self.compute_health();
+
+        // system info
+        self.uptime_secs = crate::collect::system::uptime_secs();
+        let (l1, l5, l15) = crate::collect::system::loadavg();
+        self.load_1m = l1;
+        self.load_5m = l5;
+        self.load_15m = l15;
+        push_ring(&mut self.load_history, (l1 * 100.0) as u64);
     }
 
     fn compute_health(&self) -> f64 {
@@ -124,14 +149,9 @@ impl App {
             .iter()
             .map(|s| s.temp_c)
             .fold(f64::NEG_INFINITY, f64::max);
-        let max_temp = if max_temp.is_infinite() {
-            0.0
-        } else {
-            max_temp
-        };
+        let max_temp = if max_temp.is_infinite() { 0.0 } else { max_temp };
 
         let mem_pct = self.mem.used_ratio() * 100.0;
-
         compute_health_score(self.cpu.total_pct, mem_pct, &disk_pcts, max_temp)
     }
 
@@ -141,10 +161,9 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        let tick_rate = Duration::from_millis(500);
+        let tick_rate = Duration::from_millis(1000);
         let mut last_tick = Instant::now();
 
-        // Prime raw baselines so the first refresh can compute deltas
         self.cpu_raw = crate::collect::cpu::read_raw();
         self.net_raw = crate::collect::network::read_raw();
         self.disk_io_raw = crate::collect::disk::read_io_raw();
@@ -182,6 +201,7 @@ impl App {
                             },
                             AppState::Dashboard => match key.code {
                                 KeyCode::Char('q') => return Ok(()),
+                                KeyCode::Char('p') => self.paused = !self.paused,
                                 KeyCode::Esc => self.state = AppState::Menu,
                                 _ => {}
                             },
@@ -191,17 +211,22 @@ impl App {
             }
 
             if last_tick.elapsed() >= tick_rate {
-                self.refresh();
+                if !self.paused {
+                    self.refresh();
+                }
                 last_tick = Instant::now();
             }
         }
     }
 }
 
-/// Pure health-score computation, usable in tests without a live system.
-///
-/// Inputs are all percentages (0–100).  Returns a score in [0, 100]:
-/// green > 70, yellow 40–70, red < 40.
+fn push_ring(buf: &mut VecDeque<u64>, val: u64) {
+    if buf.len() >= 60 {
+        buf.pop_front();
+    }
+    buf.push_back(val);
+}
+
 pub fn compute_health_score(cpu_pct: f64, mem_pct: f64, disk_pcts: &[f64], max_temp_c: f64) -> f64 {
     let mut scores: Vec<f64> = Vec::new();
 
@@ -236,7 +261,6 @@ mod tests {
 
     #[test]
     fn health_score_bounds() {
-        // sweep across the full input range and confirm output stays in [0, 100]
         for cpu in [0.0, 50.0, 100.0] {
             for mem in [0.0, 50.0, 100.0] {
                 for disk in [&[][..], &[0.0_f64][..], &[100.0_f64][..]] {
@@ -254,11 +278,9 @@ mod tests {
 
     #[test]
     fn health_score_thresholds() {
-        // Idle system: low cpu, low mem, no disk pressure, cool temp → green (>70)
         let quiet = compute_health_score(5.0, 20.0, &[30.0], 40.0);
         assert!(quiet > 70.0, "expected green, got {quiet}");
 
-        // Stressed system: high everything → red (<40)
         let stressed = compute_health_score(95.0, 90.0, &[95.0], 88.0);
         assert!(stressed < 40.0, "expected red, got {stressed}");
     }
