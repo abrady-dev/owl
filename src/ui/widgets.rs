@@ -366,58 +366,48 @@ pub fn render_memory(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(CYAN_DIM))
-        .title_top(Span::styled(
-            " MEM ",
-            Style::default().fg(TEXT_DIM),
-        ));
+        .title_top(Span::styled(" MEM ", Style::default().fg(TEXT_DIM)));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-        .split(inner);
+    const BAR: usize = 12;
 
     let mem_pct = if app.mem.total_kb > 0 {
         (app.mem.used_kb as f64 / app.mem.total_kb as f64 * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
-
-    let ram_gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Span::styled(" ram ", Style::default().fg(TEXT_DIM))),
-        )
-        .gauge_style(Style::default().fg(CYAN).bg(Color::Reset))
-        .use_unicode(true)
-        .percent(mem_pct as u16)
-        .label(Span::styled(
-            fmt_bytes(app.mem.used_kb * 1024),
-            Style::default().fg(TEXT),
-        ));
-    f.render_widget(ram_gauge, rows[0]);
-
     let swap_pct = if app.mem.swap_total_kb > 0 {
         (app.mem.swap_used_kb as f64 / app.mem.swap_total_kb as f64 * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
 
-    let swap_gauge = Gauge::default()
-        .block(
-            Block::default()
-                .title(Span::styled(" swp ", Style::default().fg(TEXT_DIM))),
-        )
-        .gauge_style(Style::default().fg(swap_color(swap_pct)).bg(Color::Reset))
-        .use_unicode(true)
-        .percent(swap_pct as u16)
-        .label(Span::styled(
-            fmt_bytes(app.mem.swap_used_kb * 1024),
-            Style::default().fg(TEXT),
-        ));
-    f.render_widget(swap_gauge, rows[1]);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(inner);
+
+    let ram_filled = (mem_pct / 100.0 * BAR as f64) as usize;
+    let ram_color = gauge_color(mem_pct);
+    let mut ram_spans = vec![Span::styled(" ram ", Style::default().fg(TEXT_DIM))];
+    ram_spans.extend(bar_line(ram_filled, BAR, ram_color));
+    ram_spans.push(Span::styled(
+        format!(" {}/{}", fmt_bytes(app.mem.used_kb * 1024), fmt_bytes(app.mem.total_kb * 1024)),
+        Style::default().fg(TEXT_DIM),
+    ));
+    f.render_widget(Paragraph::new(Line::from(ram_spans)), rows[0]);
+
+    let swp_filled = (swap_pct / 100.0 * BAR as f64) as usize;
+    let swp_color = swap_color(swap_pct);
+    let mut swp_spans = vec![Span::styled(" swp ", Style::default().fg(TEXT_DIM))];
+    swp_spans.extend(bar_line(swp_filled, BAR, swp_color));
+    swp_spans.push(Span::styled(
+        format!(" {}/{}", fmt_bytes(app.mem.swap_used_kb * 1024), fmt_bytes(app.mem.swap_total_kb * 1024)),
+        Style::default().fg(TEXT_DIM),
+    ));
+    f.render_widget(Paragraph::new(Line::from(swp_spans)), rows[1]);
 }
 
 // ── Disk ──────────────────────────────────────────────────────────────────────
