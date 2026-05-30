@@ -5,12 +5,15 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, View};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     match app.state {
         AppState::Menu => widgets::render_launch(frame, app, frame.area()),
-        AppState::Dashboard => draw_dashboard(frame, app),
+        AppState::Dashboard => match app.current_view {
+            View::Overview => draw_dashboard(frame, app),
+            View::Help => draw_help(frame, app),
+        },
     }
 }
 
@@ -69,4 +72,21 @@ fn draw_dashboard(frame: &mut Frame, app: &App) {
     widgets::render_thermal(frame, app, mid_cols[1]);
 
     widgets::render_power_health(frame, app, rows[3]);
+}
+
+fn draw_help(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    widgets::render_footer(frame, outer[1]);
+
+    let main_block = widgets::make_main_block();
+    let inner = main_block.inner(outer[0]);
+    frame.render_widget(main_block, outer[0]);
+
+    widgets::render_help(frame, app, inner);
 }

@@ -201,9 +201,6 @@ pub fn render_footer(f: &mut Frame, area: Rect) {
             dim_sep(),
             keybind("p"),
             Span::styled(" pause", Style::default().fg(TEXT_FAINT)),
-            dim_sep(),
-            keybind("?"),
-            Span::styled(" help", Style::default().fg(TEXT_FAINT)),
         ])),
         area,
     );
@@ -618,7 +615,7 @@ pub fn render_power_health(f: &mut Frame, app: &App, area: Rect) {
             )
             .use_unicode(true)
             .percent(bat_pct.clamp(0.0, 100.0) as u16)
-            .label(Span::styled(bat_label, Style::default().fg(TEXT)));
+            .label(Span::styled(bat_label, Style::default().fg(Color::Black).add_modifier(Modifier::BOLD)));
         f.render_widget(gauge, cols[0]);
     } else {
         f.render_widget(
@@ -668,4 +665,43 @@ pub fn render_power_health(f: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Center),
         health_inner,
     );
+}
+
+// ── Help ──────────────────────────────────────────────────────────────────────
+
+pub fn render_help(f: &mut Frame, _app: &App, area: Rect) {
+    const BINDS: &[(&str, &str)] = &[
+        ("q",      "quit"),
+        ("Esc",    "back to menu"),
+        ("p",      "pause / resume data refresh"),
+        ("↑ / k",  "move selection up"),
+        ("↓ / j",  "move selection down"),
+        ("Enter",  "open selected view"),
+        ("1",      "open Overview"),
+        ("2",      "open Help"),
+    ];
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Keybindings", Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
+        ])),
+        rows[0],
+    );
+
+    let lines: Vec<Line> = BINDS
+        .iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(format!("  {:<12}", key), Style::default().fg(CYAN)),
+                Span::styled(*desc, Style::default().fg(TEXT_DIM)),
+            ])
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(Text::from(lines)), rows[1]);
 }

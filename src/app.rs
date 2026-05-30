@@ -18,6 +18,7 @@ use crate::ui;
 #[derive(Clone, Copy, PartialEq)]
 pub enum View {
     Overview,
+    Help,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -28,6 +29,7 @@ pub enum AppState {
 
 pub const MENU_ITEMS: &[(&str, &str, View)] = &[
     ("Overview", "Full system dashboard", View::Overview),
+    ("Help", "Keybindings and usage", View::Help),
 ];
 
 pub struct App {
@@ -41,6 +43,7 @@ pub struct App {
     pub power: PowerStats,
     pub health: f64,
     pub state: AppState,
+    pub current_view: View,
     pub menu_idx: usize,
     pub paused: bool,
 
@@ -75,7 +78,8 @@ impl App {
             thermal: ThermalStats::default(),
             power: PowerStats::default(),
             health: 100.0,
-            state: AppState::Dashboard,
+            state: AppState::Menu,
+            current_view: View::Overview,
             menu_idx: 0,
             paused: false,
             hostname,
@@ -157,6 +161,7 @@ impl App {
 
     fn enter_view(&mut self, idx: usize) {
         self.menu_idx = idx;
+        self.current_view = MENU_ITEMS[idx].2;
         self.state = AppState::Dashboard;
     }
 
