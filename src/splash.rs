@@ -9,7 +9,7 @@ pub const ART: &str = "\
 /// Returns an empty Vec if the PNG can't be decoded.
 pub fn load_idle_frames() -> Vec<Vec<u8>> {
     const SHEET: &[u8] = include_bytes!(
-        "../design_handoff_owl_brand/assets/owl-pixel-sheet-32.png"
+        "../assets/owl-pixel-sheet-32.png"
     );
     let Ok(img) = image::load_from_memory(SHEET) else { return Vec::new() };
     let rgba = img.to_rgba8();

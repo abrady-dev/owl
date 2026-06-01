@@ -1,6 +1,6 @@
 # owl - Linux terminal based machine cleaner
 
-![owl badge](design_handoff_owl_brand/assets/owl-badge.svg)
+![owl badge](assets/owl-badge.svg)
 
 
 **owl · lean eyes on Linux · system monitor**
