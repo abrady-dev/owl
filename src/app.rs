@@ -3,11 +3,17 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::crossterm::ExecutableCommand;
 use ratatui::DefaultTerminal;
 
 use crate::collect::{
+    apps::{AppEntry, AppSource, PackageManager},
     cpu::{CpuStats, RawCpuStats},
     disk::{DiskStats, RawDiskIo},
+    downloads::FileEntry,
     memory::MemStats,
     network::{NetStats, RawNetStats},
     power::PowerStats,
@@ -19,6 +25,8 @@ use crate::ui;
 pub enum View {
     Overview,
     Help,
+    Downloads,
+    Apps,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -27,8 +35,36 @@ pub enum AppState {
     Dashboard,
 }
 
+/// State machine for the Downloads file browser.
+#[derive(Clone, PartialEq)]
+pub enum BrowseMode {
+    Navigate,
+    Search,
+    /// (display_name, path_to_delete, size_bytes)
+    Confirm(String, std::path::PathBuf, u64),
+}
+
+/// How to remove an installed application.
+#[derive(Clone, PartialEq)]
+pub enum UninstallCmd {
+    SystemPkg(String, PackageManager), // (pkg_name, pm)
+    Flatpak(String),                   // app ID
+    Snap(String),                      // snap name
+    Unknown,                           // couldn't resolve
+}
+
+/// State machine for the Apps view.
+#[derive(Clone, PartialEq)]
+pub enum AppMode {
+    Navigate,
+    Search,
+    Confirm { name: String, cmd: UninstallCmd },
+}
+
 pub const MENU_ITEMS: &[(&str, &str, View)] = &[
     ("Overview", "Full system dashboard", View::Overview),
+    ("Apps", "Remove installed applications", View::Apps),
+    ("Downloads", "Browse and delete ~/Downloads", View::Downloads),
     ("Help", "Keybindings and usage", View::Help),
 ];
 
@@ -46,6 +82,9 @@ pub struct App {
     pub current_view: View,
     pub menu_idx: usize,
     pub paused: bool,
+    pub owl_frames: Vec<Vec<u8>>,  // RGBA 32×32 per frame, idle sheet
+    pub owl_frame_idx: usize,
+    pub owl_frame_timer: Instant,
 
     // system info
     pub hostname: String,
@@ -60,6 +99,18 @@ pub struct App {
     cpu_raw: Option<RawCpuStats>,
     net_raw: Option<RawNetStats>,
     disk_io_raw: Option<RawDiskIo>,
+
+    // downloads view
+    pub dl_files: Vec<FileEntry>,
+    pub dl_idx: usize,
+    pub dl_search: String,
+    pub dl_mode: BrowseMode,
+
+    // apps view
+    pub app_list: Vec<AppEntry>,
+    pub app_idx: usize,
+    pub app_search: String,
+    pub app_mode: AppMode,
 }
 
 impl App {
@@ -82,6 +133,9 @@ impl App {
             current_view: View::Overview,
             menu_idx: 0,
             paused: false,
+            owl_frames: crate::splash::load_idle_frames(),
+            owl_frame_idx: 0,
+            owl_frame_timer: Instant::now(),
             hostname,
             uptime_secs: 0,
             load_1m: 0.0,
@@ -93,6 +147,14 @@ impl App {
             cpu_raw: None,
             net_raw: None,
             disk_io_raw: None,
+            dl_files: Vec::new(),
+            dl_idx: 0,
+            dl_search: String::new(),
+            dl_mode: BrowseMode::Navigate,
+            app_list: Vec::new(),
+            app_idx: 0,
+            app_search: String::new(),
+            app_mode: AppMode::Navigate,
         }
     }
 
@@ -163,10 +225,308 @@ impl App {
         self.menu_idx = idx;
         self.current_view = MENU_ITEMS[idx].2;
         self.state = AppState::Dashboard;
+        if self.current_view == View::Downloads {
+            self.dl_files = crate::collect::downloads::read_downloads();
+            self.dl_idx = 0;
+            self.dl_search.clear();
+            self.dl_mode = BrowseMode::Navigate;
+        }
+        if self.current_view == View::Apps {
+            self.app_list = crate::collect::apps::list_apps();
+            self.app_idx = 0;
+            self.app_search.clear();
+            self.app_mode = AppMode::Navigate;
+        }
+    }
+
+    pub fn filtered_files(&self) -> Vec<&FileEntry> {
+        if self.dl_search.is_empty() {
+            self.dl_files.iter().collect()
+        } else {
+            let q = self.dl_search.to_lowercase();
+            self.dl_files
+                .iter()
+                .filter(|f| f.name.to_lowercase().contains(&q))
+                .collect()
+        }
+    }
+
+    fn filtered_files_count(&self) -> usize {
+        self.filtered_files().len()
+    }
+
+    fn run_delete(&mut self, path: &std::path::Path) -> io::Result<()> {
+        // Guard: path must be inside ~/Downloads
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        if !path.starts_with(home.join("Downloads")) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "path is outside ~/Downloads",
+            ));
+        }
+
+        if path.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+
+        self.dl_files.retain(|f| f.path != path);
+        let count = self.filtered_files_count();
+        if count == 0 {
+            self.dl_idx = 0;
+        } else if self.dl_idx >= count {
+            self.dl_idx = count - 1;
+        }
+        Ok(())
+    }
+
+    pub fn filtered_apps(&self) -> Vec<&AppEntry> {
+        if self.app_search.is_empty() {
+            self.app_list.iter().collect()
+        } else {
+            let q = self.app_search.to_lowercase();
+            self.app_list
+                .iter()
+                .filter(|a| a.name.to_lowercase().contains(&q))
+                .collect()
+        }
+    }
+
+    fn filtered_apps_count(&self) -> usize {
+        self.filtered_apps().len()
+    }
+
+    fn resolve_uninstall(app: &AppEntry) -> UninstallCmd {
+        match &app.source {
+            AppSource::Flatpak => {
+                match crate::collect::apps::flatpak_app_id(&app.desktop_path) {
+                    Some(id) => UninstallCmd::Flatpak(id),
+                    None => UninstallCmd::Unknown,
+                }
+            }
+            AppSource::Snap => {
+                match crate::collect::apps::snap_name(&app.desktop_path) {
+                    Some(name) => UninstallCmd::Snap(name),
+                    None => UninstallCmd::Unknown,
+                }
+            }
+            AppSource::System => {
+                match PackageManager::detect() {
+                    Some(pm) => match pm.owner_of(&app.desktop_path) {
+                        Some(pkg) => UninstallCmd::SystemPkg(pkg, pm),
+                        None => UninstallCmd::Unknown,
+                    },
+                    None => UninstallCmd::Unknown,
+                }
+            }
+        }
+    }
+
+    fn run_app_remove(
+        &mut self,
+        name: &str,
+        cmd: &UninstallCmd,
+        terminal: &mut DefaultTerminal,
+    ) -> io::Result<()> {
+        disable_raw_mode()?;
+        std::io::stdout().execute(LeaveAlternateScreen)?;
+
+        let status = match cmd {
+            UninstallCmd::SystemPkg(pkg, pm) => {
+                println!("\nRemoving {} ({})...\n", name, pm.display_remove_cmd(pkg));
+                pm.spawn_remove(pkg)
+            }
+            UninstallCmd::Flatpak(id) => {
+                println!("\nRemoving {} (flatpak uninstall {})...\n", name, id);
+                std::process::Command::new("flatpak")
+                    .args(["uninstall", "--assumeyes", id])
+                    .status()
+            }
+            UninstallCmd::Snap(snap) => {
+                println!("\nRemoving {} (snap remove {})...\n", name, snap);
+                std::process::Command::new("sudo")
+                    .args(["snap", "remove", snap])
+                    .status()
+            }
+            UninstallCmd::Unknown => {
+                println!("\n  Could not determine how to remove '{}'.", name);
+                println!("  Try: sudo pacman -Rns <package-name>");
+                std::io::stdin().read_line(&mut String::new())?;
+                std::io::stdout().execute(EnterAlternateScreen)?;
+                enable_raw_mode()?;
+                terminal.clear()?;
+                return Ok(());
+            }
+        };
+
+        match status {
+            Ok(s) if s.success() => {
+                let app_name = name.to_owned();
+                self.app_list.retain(|a| a.name != app_name);
+                let count = self.filtered_apps_count();
+                if count == 0 {
+                    self.app_idx = 0;
+                } else if self.app_idx >= count {
+                    self.app_idx = count - 1;
+                }
+            }
+            Ok(s) => println!("\n  command exited with {}", s),
+            Err(e) => println!("\n  failed to run command: {}", e),
+        }
+
+        println!("\nPress Enter to return to owl...");
+        std::io::stdin().read_line(&mut String::new())?;
+
+        std::io::stdout().execute(EnterAlternateScreen)?;
+        enable_raw_mode()?;
+        terminal.clear()?;
+        Ok(())
+    }
+
+    fn handle_apps_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> io::Result<bool> {
+        let mode = self.app_mode.clone();
+        match mode {
+            AppMode::Confirm { name, cmd } => {
+                if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
+                    self.app_mode = AppMode::Navigate;
+                    self.run_app_remove(&name, &cmd, terminal)?;
+                } else {
+                    self.app_mode = AppMode::Navigate;
+                }
+            }
+            AppMode::Search => match code {
+                KeyCode::Esc | KeyCode::Enter => self.app_mode = AppMode::Navigate,
+                KeyCode::Backspace => {
+                    self.app_search.pop();
+                    self.app_idx =
+                        self.app_idx.min(self.filtered_apps_count().saturating_sub(1));
+                }
+                KeyCode::Char(c) => {
+                    self.app_search.push(c);
+                    self.app_idx = 0;
+                }
+                _ => {}
+            },
+            AppMode::Navigate => match code {
+                KeyCode::Char('q') => return Ok(true),
+                KeyCode::Esc => {
+                    if !self.app_search.is_empty() {
+                        self.app_search.clear();
+                        self.app_idx = 0;
+                    } else {
+                        self.state = AppState::Menu;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.app_idx = self.app_idx.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let max = self.filtered_apps_count().saturating_sub(1);
+                    if self.app_idx < max {
+                        self.app_idx += 1;
+                    }
+                }
+                KeyCode::PageUp => {
+                    self.app_idx = self.app_idx.saturating_sub(15);
+                }
+                KeyCode::PageDown => {
+                    let max = self.filtered_apps_count().saturating_sub(1);
+                    self.app_idx = (self.app_idx + 15).min(max);
+                }
+                KeyCode::Char('/') => self.app_mode = AppMode::Search,
+                KeyCode::Char('d') | KeyCode::Enter => {
+                    if let Some(app) = self.filtered_apps().get(self.app_idx).copied() {
+                        let cmd = Self::resolve_uninstall(app);
+                        self.app_mode = AppMode::Confirm {
+                            name: app.name.clone(),
+                            cmd,
+                        };
+                    }
+                }
+                _ => {}
+            },
+        }
+        Ok(false)
+    }
+
+    fn handle_downloads_key(&mut self, code: KeyCode) -> io::Result<bool> {
+        let mode = self.dl_mode.clone();
+        match mode {
+            BrowseMode::Confirm(_, path, _) => {
+                if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
+                    self.dl_mode = BrowseMode::Navigate;
+                    self.run_delete(&path)?;
+                } else {
+                    self.dl_mode = BrowseMode::Navigate;
+                }
+            }
+            BrowseMode::Search => match code {
+                KeyCode::Esc | KeyCode::Enter => self.dl_mode = BrowseMode::Navigate,
+                KeyCode::Backspace => {
+                    self.dl_search.pop();
+                    self.dl_idx =
+                        self.dl_idx.min(self.filtered_files_count().saturating_sub(1));
+                }
+                KeyCode::Char(c) => {
+                    self.dl_search.push(c);
+                    self.dl_idx = 0;
+                }
+                _ => {}
+            },
+            BrowseMode::Navigate => match code {
+                KeyCode::Char('q') => return Ok(true),
+                KeyCode::Esc => {
+                    if !self.dl_search.is_empty() {
+                        self.dl_search.clear();
+                        self.dl_idx = 0;
+                    } else {
+                        self.state = AppState::Menu;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.dl_idx = self.dl_idx.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let max = self.filtered_files_count().saturating_sub(1);
+                    if self.dl_idx < max {
+                        self.dl_idx += 1;
+                    }
+                }
+                KeyCode::PageUp => {
+                    self.dl_idx = self.dl_idx.saturating_sub(15);
+                }
+                KeyCode::PageDown => {
+                    let max = self.filtered_files_count().saturating_sub(1);
+                    self.dl_idx = (self.dl_idx + 15).min(max);
+                }
+                KeyCode::Char('/') => {
+                    self.dl_mode = BrowseMode::Search;
+                }
+                KeyCode::Char('d') | KeyCode::Enter => {
+                    if let Some(f) = self.filtered_files().get(self.dl_idx) {
+                        self.dl_mode = BrowseMode::Confirm(
+                            f.name.clone(),
+                            f.path.clone(),
+                            f.size_bytes,
+                        );
+                    }
+                }
+                _ => {}
+            },
+        }
+        Ok(false)
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let tick_rate = Duration::from_millis(1000);
+        let anim_rate = Duration::from_millis(130);
         let mut last_tick = Instant::now();
 
         self.cpu_raw = crate::collect::cpu::read_raw();
@@ -178,7 +538,8 @@ impl App {
         loop {
             terminal.draw(|frame| ui::draw(frame, self))?;
 
-            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            let anim_remaining = anim_rate.saturating_sub(self.owl_frame_timer.elapsed());
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed()).min(anim_remaining);
             if event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
@@ -204,15 +565,36 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            AppState::Dashboard => match key.code {
-                                KeyCode::Char('q') => return Ok(()),
-                                KeyCode::Char('p') => self.paused = !self.paused,
-                                KeyCode::Esc => self.state = AppState::Menu,
-                                _ => {}
-                            },
+                            AppState::Dashboard => {
+                                if self.current_view == View::Downloads {
+                                    let quit = self.handle_downloads_key(key.code)?;
+                                    if quit {
+                                        return Ok(());
+                                    }
+                                } else if self.current_view == View::Apps {
+                                    let quit = self.handle_apps_key(key.code, terminal)?;
+                                    if quit {
+                                        return Ok(());
+                                    }
+                                } else {
+                                    match key.code {
+                                        KeyCode::Char('q') => return Ok(()),
+                                        KeyCode::Char('p') => self.paused = !self.paused,
+                                        KeyCode::Esc => self.state = AppState::Menu,
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+            }
+
+            if self.owl_frame_timer.elapsed() >= anim_rate {
+                if !self.owl_frames.is_empty() {
+                    self.owl_frame_idx = (self.owl_frame_idx + 1) % self.owl_frames.len();
+                }
+                self.owl_frame_timer = Instant::now();
             }
 
             if last_tick.elapsed() >= tick_rate {

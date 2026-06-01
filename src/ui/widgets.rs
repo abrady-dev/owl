@@ -6,7 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, MENU_ITEMS};
+use crate::app::{App, AppMode, BrowseMode, UninstallCmd, MENU_ITEMS};
+use crate::collect::apps::AppSource;
 use crate::collect::system;
 use crate::splash;
 
@@ -111,24 +112,45 @@ pub fn make_main_block() -> Block<'static> {
 
 pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
     let art = splash::ART;
-    let art_height = art.lines().count() as u16;
+    let art_height = art.lines().count() as u16; // 5 rows
 
-    let rows = Layout::default()
+    // Layout: [sprite 8 rows | wordmark+tagline] then menu then footer
+    let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(art_height),
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(8),  // sprite (2x downscale: 16 wide × 8 rows) | wordmark
+            Constraint::Min(1),     // menu items
+            Constraint::Length(1),  // footer hint
         ])
         .split(area);
 
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(20), // 2 pad + 16 sprite + 2 pad
+            Constraint::Min(0),     // wordmark + tagline
+        ])
+        .split(outer[0]);
+
+    // ── Animated sprite (left) ────────────────────────────────────────────────
+    if let Some(pixels) = app.owl_frames.get(app.owl_frame_idx) {
+        render_pixel_sprite_small(f, pixels, 32, 32, top_cols[0]);
+    }
+
+    // ── Wordmark + tagline (right) ────────────────────────────────────────────
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(art_height), // text OWL wordmark
+            Constraint::Length(1),          // tagline
+            Constraint::Min(0),
+        ])
+        .split(top_cols[1]);
+
     f.render_widget(
         Paragraph::new(art).style(Style::default().fg(CYAN)),
-        rows[0],
+        right[0],
     );
-
-    // Tagline with cyan-dim dots
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("owl", Style::default().fg(CYAN).add_modifier(Modifier::BOLD)),
@@ -137,10 +159,10 @@ pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · ", Style::default().fg(CYAN_DIM)),
             Span::styled("system monitor", Style::default().fg(TEXT_FAINT)),
         ])),
-        rows[1],
+        right[1],
     );
 
-    // Menu items
+    // ── Menu items ────────────────────────────────────────────────────────────
     let items: Vec<Line> = MENU_ITEMS
         .iter()
         .enumerate()
@@ -167,7 +189,7 @@ pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    f.render_widget(Paragraph::new(Text::from(items)), rows[2]);
+    f.render_widget(Paragraph::new(Text::from(items)), outer[1]);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -180,8 +202,41 @@ pub fn render_launch(f: &mut Frame, app: &App, area: Rect) {
             keybind("q"),
             Span::styled(" quit", Style::default().fg(TEXT_FAINT)),
         ])),
-        rows[3],
+        outer[2],
     );
+}
+
+/// 2x nearest-neighbor downscale rendered as Unicode half-blocks, left-aligned.
+/// Result: src_w/2 cells wide × src_h/4 terminal rows, with 2-cell left padding.
+fn render_pixel_sprite_small(f: &mut Frame, pixels: &[u8], src_w: usize, src_h: usize, area: Rect) {
+    let dest_w = src_w / 2;
+    let half_rows = src_h / 4;
+
+    let lines: Vec<Line> = (0..half_rows)
+        .map(|row| {
+            let mut spans: Vec<Span> = Vec::with_capacity(dest_w + 1);
+            spans.push(Span::raw("  "));
+            for col in 0..dest_w {
+                let sx = col * 2;
+                let sy_top = row * 4;
+                let sy_bot = row * 4 + 2;
+                let ti = (sy_top * src_w + sx) * 4;
+                let bi = (sy_bot * src_w + sx) * 4;
+                let (tr, tg, tb, ta) = (pixels[ti], pixels[ti+1], pixels[ti+2], pixels[ti+3]);
+                let (br, bg, bb, ba) = (pixels[bi], pixels[bi+1], pixels[bi+2], pixels[bi+3]);
+                let (ch, fg, bg_col) = match (ta > 64, ba > 64) {
+                    (false, false) => (' ', Color::Reset, Color::Reset),
+                    (true,  false) => ('▀', Color::Rgb(tr, tg, tb), Color::Reset),
+                    (false, true)  => ('▄', Color::Rgb(br, bg, bb), Color::Reset),
+                    (true,  true)  => ('▀', Color::Rgb(tr, tg, tb), Color::Rgb(br, bg, bb)),
+                };
+                spans.push(Span::styled(ch.to_string(), Style::default().fg(fg).bg(bg_col)));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 // ── Footer ────────────────────────────────────────────────────────────────────
@@ -667,18 +722,323 @@ pub fn render_power_health(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+// ── Apps ──────────────────────────────────────────────────────────────────────
+
+pub fn render_apps(f: &mut Frame, app: &App, area: Rect) {
+    let filtered = app.filtered_apps();
+    let total = filtered.len();
+    let all_total = app.app_list.len();
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // Header
+    let header = if app.app_search.is_empty() {
+        format!(" Installed applications  {} found", all_total)
+    } else {
+        format!(" Installed applications  {}/{}", total, all_total)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(header, Style::default().fg(TEXT_DIM)))),
+        rows[0],
+    );
+
+    // Search bar
+    let search_line = match &app.app_mode {
+        AppMode::Search => Line::from(vec![
+            Span::styled(" / ", Style::default().fg(CYAN)),
+            Span::styled(app.app_search.clone(), Style::default().fg(TEXT)),
+            Span::styled("_", Style::default().fg(CYAN)),
+        ]),
+        _ if !app.app_search.is_empty() => Line::from(vec![
+            Span::styled(" / ", Style::default().fg(CYAN_DIM)),
+            Span::styled(app.app_search.clone(), Style::default().fg(TEXT_DIM)),
+        ]),
+        _ => Line::from(Span::styled(
+            " press / to search",
+            Style::default().fg(TEXT_FAINT),
+        )),
+    };
+    f.render_widget(Paragraph::new(search_line), rows[1]);
+
+    // App list
+    let list_area = rows[2];
+    let visible_h = list_area.height as usize;
+
+    let scroll = if total == 0 || total <= visible_h {
+        0
+    } else {
+        let center = app.app_idx.saturating_sub(visible_h / 2);
+        center.min(total - visible_h)
+    };
+
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                if app.app_list.is_empty() {
+                    " no applications found"
+                } else {
+                    " no matches"
+                },
+                Style::default().fg(TEXT_FAINT),
+            )),
+            list_area,
+        );
+    } else {
+        let end = (scroll + visible_h).min(total);
+        let lines: Vec<Line> = filtered[scroll..end]
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let idx = scroll + i;
+                let selected = idx == app.app_idx;
+                let cursor = if selected { "▶" } else { " " };
+                let name_style = if selected {
+                    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                let tag_style = if selected {
+                    Style::default().fg(TEXT_DIM)
+                } else {
+                    Style::default().fg(TEXT_FAINT)
+                };
+                let tag = match &entry.source {
+                    AppSource::Flatpak => "flatpak",
+                    AppSource::Snap    => "snap   ",
+                    AppSource::System  => "system ",
+                };
+                Line::from(vec![
+                    Span::styled(format!(" {} ", cursor), Style::default().fg(CYAN)),
+                    Span::styled(format!("{:<40}", &entry.name), name_style),
+                    Span::styled(tag, tag_style),
+                ])
+            })
+            .collect();
+        f.render_widget(Paragraph::new(Text::from(lines)), list_area);
+    }
+
+    // Hint / confirm bar
+    let hint_line = match &app.app_mode {
+        AppMode::Confirm { name, cmd } => {
+            let cmd_str = match cmd {
+                UninstallCmd::SystemPkg(pkg, pm) => pm.display_remove_cmd(pkg),
+                UninstallCmd::Flatpak(id)        => format!("flatpak uninstall {}", id),
+                UninstallCmd::Snap(snap)         => format!("sudo snap remove {}", snap),
+                UninstallCmd::Unknown            => "⚠  owner unknown".to_owned(),
+            };
+            let (y_style, confirm_text): (Style, &str) = match cmd {
+                UninstallCmd::Unknown => (Style::default().fg(TEXT_FAINT), "  [Esc] cancel"),
+                _ => (Style::default().fg(RED), "  [y] confirm  [any] cancel"),
+            };
+            Line::from(vec![
+                Span::styled(" Remove '", Style::default().fg(TEXT_DIM)),
+                Span::styled(
+                    name.clone(),
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("'  ", Style::default().fg(TEXT_DIM)),
+                Span::styled(cmd_str, Style::default().fg(CYAN_DIM)),
+                Span::styled(confirm_text, y_style),
+            ])
+        }
+        AppMode::Search => Line::from(vec![
+            keybind("Enter"),
+            Span::styled(" done  ", Style::default().fg(TEXT_FAINT)),
+            keybind("Esc"),
+            Span::styled(" cancel search", Style::default().fg(TEXT_FAINT)),
+        ]),
+        AppMode::Navigate => Line::from(vec![
+            keybind("↑↓"),
+            Span::styled(" navigate", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("/"),
+            Span::styled(" search", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("d"),
+            Span::styled(" remove", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("Esc"),
+            Span::styled(" back", Style::default().fg(TEXT_FAINT)),
+        ]),
+    };
+    f.render_widget(Paragraph::new(hint_line), rows[3]);
+}
+
+// ── Downloads ─────────────────────────────────────────────────────────────────
+
+pub fn render_downloads(f: &mut Frame, app: &App, area: Rect) {
+    let filtered = app.filtered_files();
+    let total = filtered.len();
+    let all_total = app.dl_files.len();
+
+    // Layout: header (1) | search (1) | list (min) | hint (1)
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // Header: item count
+    let header_text = if app.dl_search.is_empty() {
+        format!(" ~/Downloads  {} items", all_total)
+    } else {
+        format!(" ~/Downloads  {}/{} items", total, all_total)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(header_text, Style::default().fg(TEXT_DIM)))),
+        rows[0],
+    );
+
+    // Search bar
+    let search_line = match &app.dl_mode {
+        BrowseMode::Search => Line::from(vec![
+            Span::styled(" / ", Style::default().fg(CYAN)),
+            Span::styled(app.dl_search.clone(), Style::default().fg(TEXT)),
+            Span::styled("_", Style::default().fg(CYAN)),
+        ]),
+        _ if !app.dl_search.is_empty() => Line::from(vec![
+            Span::styled(" / ", Style::default().fg(CYAN_DIM)),
+            Span::styled(app.dl_search.clone(), Style::default().fg(TEXT_DIM)),
+        ]),
+        _ => Line::from(Span::styled(
+            " press / to search",
+            Style::default().fg(TEXT_FAINT),
+        )),
+    };
+    f.render_widget(Paragraph::new(search_line), rows[1]);
+
+    // File list
+    let list_area = rows[2];
+    let visible_h = list_area.height as usize;
+
+    let scroll = if total == 0 || total <= visible_h {
+        0
+    } else {
+        let center = app.dl_idx.saturating_sub(visible_h / 2);
+        center.min(total - visible_h)
+    };
+
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                if app.dl_files.is_empty() {
+                    " ~/Downloads is empty"
+                } else {
+                    " no files match"
+                },
+                Style::default().fg(TEXT_FAINT),
+            )),
+            list_area,
+        );
+    } else {
+        let end = (scroll + visible_h).min(total);
+        let lines: Vec<Line> = filtered[scroll..end]
+            .iter()
+            .enumerate()
+            .map(|(i, file)| {
+                let idx = scroll + i;
+                let selected = idx == app.dl_idx;
+                let cursor = if selected { "▶" } else { " " };
+                let name_style = if selected {
+                    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                let meta_style = if selected {
+                    Style::default().fg(TEXT_DIM)
+                } else {
+                    Style::default().fg(TEXT_FAINT)
+                };
+                let type_tag = if file.is_dir { "[dir] " } else { "      " };
+                let size_str = if file.is_dir {
+                    String::new()
+                } else {
+                    fmt_bytes(file.size_bytes)
+                };
+                Line::from(vec![
+                    Span::styled(format!(" {} ", cursor), Style::default().fg(CYAN)),
+                    Span::styled(type_tag, meta_style),
+                    Span::styled(format!("{:<40}", &file.name), name_style),
+                    Span::styled(size_str, meta_style),
+                ])
+            })
+            .collect();
+        f.render_widget(Paragraph::new(Text::from(lines)), list_area);
+    }
+
+    // Hint / confirm bar
+    let hint_line = match &app.dl_mode {
+        BrowseMode::Confirm(name, _, size) => Line::from(vec![
+            Span::styled(" Delete '", Style::default().fg(TEXT_DIM)),
+            Span::styled(name.clone(), Style::default().fg(RED).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("'  ({})  ", fmt_bytes(*size)),
+                Style::default().fg(TEXT_DIM),
+            ),
+            Span::styled("[y]", Style::default().fg(RED)),
+            Span::styled(" yes  ", Style::default().fg(TEXT_DIM)),
+            Span::styled("[any other key]", Style::default().fg(CYAN_DIM)),
+            Span::styled(" cancel", Style::default().fg(TEXT_FAINT)),
+        ]),
+        BrowseMode::Search => Line::from(vec![
+            keybind("Enter"),
+            Span::styled(" done  ", Style::default().fg(TEXT_FAINT)),
+            keybind("Esc"),
+            Span::styled(" cancel search", Style::default().fg(TEXT_FAINT)),
+        ]),
+        BrowseMode::Navigate => Line::from(vec![
+            keybind("↑↓"),
+            Span::styled(" navigate", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("/"),
+            Span::styled(" search", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("d"),
+            Span::styled(" delete", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("Esc"),
+            Span::styled(" back", Style::default().fg(TEXT_FAINT)),
+        ]),
+    };
+    f.render_widget(Paragraph::new(hint_line), rows[3]);
+}
+
 // ── Help ──────────────────────────────────────────────────────────────────────
 
 pub fn render_help(f: &mut Frame, _app: &App, area: Rect) {
     const BINDS: &[(&str, &str)] = &[
-        ("q",      "quit"),
-        ("Esc",    "back to menu"),
-        ("p",      "pause / resume data refresh"),
-        ("↑ / k",  "move selection up"),
-        ("↓ / j",  "move selection down"),
-        ("Enter",  "open selected view"),
-        ("1",      "open Overview"),
-        ("2",      "open Help"),
+        ("q",          "quit"),
+        ("Esc",        "back to menu"),
+        ("p",          "pause / resume data refresh"),
+        ("↑ / k",      "move selection up"),
+        ("↓ / j",      "move selection down"),
+        ("Enter",      "open selected view"),
+        ("1",          "open Overview"),
+        ("2",          "open Apps"),
+        ("3",          "open Downloads"),
+        ("4",          "open Help"),
+        ("",           ""),
+        ("Apps",       ""),
+        ("/",          "search applications"),
+        ("d / Enter",  "remove selected app"),
+        ("y",          "confirm removal"),
+        ("",           ""),
+        ("Downloads",  ""),
+        ("/",          "search files"),
+        ("d / Enter",  "delete selected file"),
+        ("y",          "confirm delete"),
     ];
 
     let rows = Layout::default()

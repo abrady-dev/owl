@@ -1,0 +1,36 @@
+<svg width="220" height="230" viewBox="0 0 220 230" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="owl">
+  <title>owl</title>
+  <defs>
+    <filter id="owlGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.2" result="b"></feGaussianBlur>
+      <feMerge><feMergeNode in="b"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#owlGlow)" stroke="#3fdcdc" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    
+    <path d="M74 44 L60 16 L92 38"></path>
+    <path d="M146 44 L160 16 L128 38"></path>
+    
+    <path d="M110 36 C74 36 56 60 56 96 C56 142 70 196 110 206 C150 196 164 142 164 96 C164 60 146 36 110 36 Z"></path>
+    
+    <path d="M110 58 C96 74 96 92 110 104 C124 92 124 74 110 58" stroke-width="5" opacity="0.5"></path>
+    
+    <path d="M64 112 C66 146 76 174 96 190" stroke-width="5" opacity="0.65"></path>
+    <path d="M156 112 C154 146 144 174 124 190" stroke-width="5" opacity="0.65"></path>
+    
+    <path d="M70 206 L150 206" stroke-width="5" opacity="0.7"></path>
+    <path d="M100 206 L100 214 M96 214 L104 214" stroke-width="5"></path>
+    <path d="M120 206 L120 214 M116 214 L124 214" stroke-width="5"></path>
+  </g>
+  
+  <g filter="url(#owlGlow)">
+    <circle cx="84" cy="92" r="27" stroke="#1b2a2c" stroke-width="8"></circle>
+    <circle cx="136" cy="92" r="27" stroke="#1b2a2c" stroke-width="8"></circle>
+    <circle cx="84" cy="92" r="27" stroke="#3fdcdc" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="74 26" transform="rotate(138 84 92)"></circle>
+    <circle cx="136" cy="92" r="27" stroke="#3fdcdc" stroke-width="8" stroke-linecap="round" pathLength="100" stroke-dasharray="74 26" transform="rotate(138 136 92)"></circle>
+    <circle cx="84" cy="92" r="9" fill="#3fdcdc"></circle>
+    <circle cx="136" cy="92" r="9" fill="#3fdcdc"></circle>
+    
+    <path d="M110 104 L103 116 L110 123 L117 116 Z" fill="#3fdcdc"></path>
+  </g>
+</svg>

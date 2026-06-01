@@ -1,35 +1,35 @@
 # owl - Linux terminal based machine cleaner
-```
 
-█████ █     █ █    
-█   █ █     █ █    
-█   █ █  █  █ █    
-█   █ █ █ █ █ █    
-█████  █   █  █████
+![owl badge](design_handoff_owl_brand/assets/owl-badge.svg)
 
-```
 
 **owl · lean eyes on Linux · system monitor**
 
-A terminal system monitor for Linux, written in Rust. Real-time CPU, memory,
-disk, network, thermal, and power stats in a clean TUI — built entirely on
-`/proc` and `/sys` with no external system dependencies.
+A terminal monitor and cleaner for Linux, written in Rust. Real-time system
+stats in a clean TUI, plus an interactive app manager and downloads browser.
+The monitor reads directly from `/proc` and `/sys`; the cleaner integrates
+with the system package manager for app removal.
 
 ---
 
 ## Overview
 
-owl is built around a single constraint: **read from the kernel, nothing else.**
-No calls to external tools like `sensors`, `lsblk`, or `ip`. No system libraries
-beyond libc. Every number on screen comes directly from a `/proc` or `/sys` file,
-parsed by hand in Rust.
+owl has two layers. The **monitor** (Overview) reads exclusively from the kernel —
+no calls to external tools like `sensors`, `lsblk`, or `ip`. Every metric comes
+directly from a `/proc` or `/sys` file, parsed by hand in Rust.
 
-The result is a monitor that starts instantly, uses minimal resources, and has
-no surprise dependencies to break across distro versions.
+The **cleaner** (Apps, Downloads) adds interactive management: browse and remove
+installed applications via the system package manager, and delete files from
+`~/Downloads`. The cleaner calls the package manager only to resolve package
+ownership; the monitor itself never invokes external commands.
 
 ---
 
-## Dashboard
+## Views
+
+owl launches to a menu with four views selectable by number or `↑↓ Enter`.
+
+### Overview — system monitor
 
 ```
 ┌owl · lean eyes on Linux ───────────────────────────────────────────────────┐
@@ -49,32 +49,73 @@ no surprise dependencies to break across distro versions.
 ├──────────────────────────────────────────┴─────────────────────────────────┤
 │ BAT  ████████████████░░░░░░░░  73% ↓         HEALTH  ● 92  good            │
 └────────────────────────────────────────────────────────────────────────────┘
-  q quit   ↑↓ select   tab cycle panel   p pause   ? help
+  q quit   ↑↓ select   tab cycle panel   p pause
 ```
+
+### Apps — installed application manager
+
+Scrollable list of every installed application discovered from `.desktop` files
+(system packages, Flatpak, Snap). Each entry is tagged by source. Press `/` to
+filter by name, `d` or `Enter` to queue removal, `y` to confirm. Removal runs
+the appropriate package manager command (`pacman -Rns`, `apt remove`, `flatpak
+uninstall`, `snap remove`).
+
+### Downloads — file browser
+
+Size-sorted view of `~/Downloads`. Press `/` to filter, `d` or `Enter` to queue
+deletion, `y` to confirm. Deletion is guarded — owl refuses to delete anything
+outside `~/Downloads`.
+
+### Help — keybinding reference
+
+Full keybinding reference for all views.
 
 ---
 
 ## Features
 
+### Overview panels
+
 | Panel | Data source | What you see |
 |-------|-------------|--------------|
-| **CPU** | `/proc/stat` | Per-core % bars (2-column), aggregate %, 60s load sparkline |
-| **MEM** | `/proc/meminfo` | RAM used (cyan), swap used (threshold-colored) |
+| **HEADER** | `/etc/hostname`, `/proc/uptime`, `/proc/loadavg`, `/proc/cpuinfo` | Hostname, uptime, 1m/5m/15m load averages, live clock |
+| **CPU** | `/proc/stat` | Per-core % bars (2-column, up to 8 cores), aggregate %, 60s load sparkline |
+| **MEM** | `/proc/meminfo` | RAM used/total, swap used/total, threshold-colored bars |
 | **DISK** | `/proc/mounts` + `statvfs` | Per-mount usage bars, threshold-colored |
-| **NET** | `/proc/net/dev` | rx/tx bytes per second, 60-sample sparklines |
+| **NET** | `/proc/net/dev` | Interface name, rx/tx bytes per second, 60-sample sparklines |
 | **TEMP** | `/sys/class/hwmon` | CPU and SSD temperatures, threshold-colored gauges |
-| **BAT** | `/sys/class/power_supply` | Charge %, charging/discharging status |
-| **HEALTH** | Derived | Composite score from CPU, memory, disk, and thermal |
+| **BAT** | `/sys/class/power_supply` | Charge %, charging/discharging/full status |
+| **HEALTH** | Derived | Composite score (0–100) from CPU, memory, disk, and thermal |
 
 **Color thresholds** apply to all gauges: below 40% blue · 40–69% yellow · 70%+ red.
 
-**Keybinds**
+### Keybinds
+
+**Global**
 
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
-| `p` | Pause / resume sampling |
-| `Esc` | Return to launch screen |
+| `Esc` | Return to menu |
+| `↑` / `k` | Move up |
+| `↓` / `j` | Move down |
+| `Enter` | Open selected |
+| `1`–`4` | Jump to view by number |
+
+**Overview**
+
+| Key | Action |
+|-----|--------|
+| `p` | Pause / resume data refresh |
+
+**Apps and Downloads**
+
+| Key | Action |
+|-----|--------|
+| `/` | Enter search mode |
+| `d` / `Enter` | Queue removal / deletion |
+| `y` | Confirm removal / deletion |
+| `PageUp` / `PageDown` | Scroll 15 rows |
 
 ---
 
@@ -98,9 +139,14 @@ ui/*               ← pure render functions; never read /proc
 ratatui frame
 ```
 
-Every parser in `collect/` takes a `&str` of file content and returns a plain
-struct — testable against canned fixtures with no live system required. The thin
-`read()` wrapper that reads the actual file is separate.
+Monitor collectors (`cpu`, `memory`, `disk`, `network`, `thermal`, `power`,
+`system`) take a `&str` of file content and return a plain struct — testable
+against canned fixtures with no live system required. The thin `read()` wrapper
+that reads the actual file is separate.
+
+Cleaner collectors (`apps`, `downloads`) read the filesystem directly: `apps`
+scans `.desktop` directories and optionally shells out to the package manager
+to resolve ownership; `downloads` lists `~/Downloads` by size.
 
 **Source layout**
 
@@ -116,7 +162,9 @@ src/
 │   ├── network.rs   # /proc/net/dev — delta-based rates
 │   ├── thermal.rs   # /sys/class/hwmon — sensor priority ranking
 │   ├── power.rs     # /sys/class/power_supply
-│   └── system.rs    # hostname, uptime, load averages, clock
+│   ├── system.rs    # hostname, uptime, load averages, clock
+│   ├── apps.rs      # installed app list from .desktop files (system/Flatpak/Snap)
+│   └── downloads.rs # ~/Downloads directory scan, sorted by size
 └── ui/
     ├── mod.rs        # layout engine
     └── widgets.rs    # one render fn per panel
@@ -133,7 +181,6 @@ kernel. No writes, no deletions, nothing destructive.
 
 **Upcoming in Phase 1:**
 
-- `?` help overlay with keybind reference
 - Panel focus with `↑↓` / `tab` — highlight selected panel
 - Process list (top N by CPU/memory, sortable)
 - GPU metrics via `/sys/class/drm` and `hwmon` where available
@@ -168,6 +215,7 @@ The cleaning phase is designed with a strict safety contract:
 
 | Milestone | Target | Notes |
 |-----------|--------|-------|
+| v0.4 | App manager + downloads browser | Apps view (searchable list, removal via pacman/apt/dnf/zypper/flatpak/snap), Downloads view (size-sorted browser, guarded deletion) — **done** |
 | v0.5 | Safety primitives | Protected-path predicate, dry-run mode, audit log — no user features yet |
 | v0.6 | Read-only scanner | Walks targets, produces manifest with size preview; cannot delete |
 | v0.7 | Caches | Thumbnail cache, browser caches, journald vacuum, pacman `paccache` |
@@ -209,9 +257,10 @@ cargo build --release      # build release binary at target/release/owl
 
 ## Design notes
 
-- **No external dependencies** beyond `ratatui` and `libc`. Every metric is
-  parsed from kernel-provided files — no `sysinfo`, `procfs` crate, or shell
-  command invocations.
+- **No external dependencies** beyond `ratatui` and `libc` for the monitor.
+  The Apps view shells out to the system package manager (pacman, dpkg, rpm)
+  only when resolving package ownership for removal — the monitor itself never
+  invokes external commands.
 - **Testable by design.** All parsers are pure `parse(&str) -> Struct` functions
   exercised against fixture strings. The test suite runs on any machine, even
   one without the monitored hardware.

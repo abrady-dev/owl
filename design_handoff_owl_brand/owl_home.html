@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>owl — home screen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#06090b; --panel:#0a0f11; --line:#16211e; --cyan:#3fdcdc; --cyan-dim:#1f8a8a;
+    --txt:#c5d0d3; --dim:#6a777d; --faint:#3f4a4f; --sel:#0e2b2b; --mag:#e06ce0;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    background:radial-gradient(900px 600px at 50% 0%,#0e1517 0%,var(--bg) 60%);
+    font-family:"JetBrains Mono",ui-monospace,monospace;
+    color:var(--txt); display:flex; align-items:center; justify-content:center; min-height:100vh; padding:30px;
+  }
+  .term{
+    width:760px; border:1px solid var(--line); border-radius:8px; overflow:hidden;
+    background:var(--panel); box-shadow:0 30px 80px rgba(0,0,0,.5);
+  }
+  .chrome{ height:38px; display:flex; align-items:center; gap:8px; padding:0 16px;
+    border-bottom:1px solid var(--line); background:#080c0d; }
+  .d{ width:11px; height:11px; border-radius:50%; background:#28332f; }
+  .chrome .t{ margin-left:12px; font-size:12px; color:var(--faint); }
+  .chrome .t b{ color:var(--cyan-dim); }
+
+  .screen{ padding:0; font-size:15px; line-height:1.5; }
+
+  /* outer ratatui block */
+  .box{ margin:14px; border:1px solid var(--cyan-dim); border-radius:4px; position:relative; }
+  .box-title{ position:absolute; top:-0.75em; left:14px; background:var(--panel); padding:0 8px;
+    font-size:13px; color:var(--cyan); }
+  .box-title .dim{ color:var(--cyan-dim); }
+
+  .stage{ position:relative; height:172px; overflow:hidden;
+    border-bottom:1px dashed var(--line); }
+  /* the branch the owl hops on */
+  .branch{ position:absolute; left:0; right:0; bottom:30px; color:var(--cyan-dim);
+    white-space:pre; font-size:15px; text-align:center; opacity:.55; }
+  .owl{ position:absolute; white-space:pre; color:var(--cyan); font-size:17px;
+    text-shadow:0 0 16px rgba(63,220,220,.5); line-height:1.08; will-change:transform; }
+  .hint{ position:absolute; bottom:8px; left:0; right:0; text-align:center;
+    color:var(--faint); font-size:12px; }
+
+  .menu{ padding:14px 18px 6px; }
+  .menu .row{ display:flex; align-items:center; gap:12px; padding:5px 12px; border-radius:3px;
+    color:var(--dim); font-size:14px; }
+  .menu .row .k{ color:var(--faint); width:18px; }
+  .menu .row .name{ color:var(--txt); }
+  .menu .row .desc{ margin-left:auto; color:var(--faint); font-size:12.5px; }
+  .menu .row.sel{ background:var(--sel); color:var(--cyan); }
+  .menu .row.sel .arrow{ color:var(--cyan); }
+  .menu .row.sel .name{ color:var(--cyan); }
+  .menu .row .arrow{ width:12px; color:transparent; }
+
+  .foot{ padding:8px 18px 16px; color:var(--faint); font-size:12.5px; border-top:1px solid var(--line); margin-top:6px; }
+  .foot b{ color:var(--cyan); font-weight:500; }
+</style>
+</head>
+<body>
+  <div class="term">
+    <div class="chrome">
+      <span class="d"></span><span class="d"></span><span class="d"></span>
+      <span class="t">~/owl <b>$</b> owl</span>
+    </div>
+    <div class="screen">
+      <div class="box">
+        <div class="box-title">&nbsp;owl <span class="dim">· lean eyes on Linux</span>&nbsp;</div>
+        <div class="stage" id="stage">
+          <div class="branch" id="branch"></div>
+          <pre class="owl" id="owl"></pre>
+          <div class="hint">a quieter top · select a panel below</div>
+        </div>
+        <div class="menu" id="menu"></div>
+        <div class="foot">
+          <b>↑↓</b> move &nbsp; <b>enter</b> open &nbsp; <b>q</b> quit &nbsp; <b>?</b> help
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ---------- owl sprite (6 rows) — great-horned owl, hops back and forth ----------
+// big round eyes + ear tufts + hooked beak. Tufts straighten & feet splay on the hop.
+const FRAMES = {
+  perch: [
+    "\\        /",
+    " ___  ___ ",
+    "/ ◉ \\/ ◉ \\",
+    "\\___/\\___/",
+    "   \\▾/    ",
+    "   ╨╨     "
+  ],
+  hop: [
+    "|        |",
+    " ___  ___ ",
+    "/ ◉ \\/ ◉ \\",
+    "\\___/\\___/",
+    "   \\▾/    ",
+    "   ╨ ╨    "
+  ],
+  blink: [
+    "\\        /",
+    " ___  ___ ",
+    "/ ─ \\/ ─ \\",
+    "\\___/\\___/",
+    "   \\▾/    ",
+    "   ╨╨     "
+  ]
+};
+const SPRITE_ROWS = 6;
+const SPRITE_COLS = 10;
+
+const owlEl = document.getElementById('owl');
+const stage = document.getElementById('stage');
+const branchEl = document.getElementById('branch');
+
+// build branch line
+branchEl.textContent = "─".repeat(80);
+
+// metrics: measure one character cell
+function cellW(){
+  const s=document.createElement('span'); s.style.font=getComputedStyle(owlEl).font;
+  s.style.position='absolute'; s.style.visibility='hidden'; s.style.whiteSpace='pre';
+  s.textContent="0".repeat(10); document.body.appendChild(s);
+  const w=s.getBoundingClientRect().width/10; s.remove(); return w;
+}
+const CW = cellW();
+const lineH = 17 * 1.08;
+
+// animation state
+let col = 4;            // current column (cell units)
+let dir = 1;           // 1 = right, -1 = left
+let step = 0;          // tick counter
+const spriteCols = SPRITE_COLS;
+const stageCols = Math.floor(stage.clientWidth / CW);
+const minCol = 2;
+const maxCol = stageCols - spriteCols - 2;
+let pauseTicks = 0;
+
+function render(){
+  // hop cycle: even tick = airborne (wings up, lifted), odd = perched.
+  const airborne = (step % 2 === 0);
+  const blink = (!airborne && step % 9 === 0);
+  let frame = blink ? FRAMES.blink : (airborne ? FRAMES.hop : FRAMES.perch);
+
+  owlEl.textContent = frame.join("\n");
+
+  // lift the owl on the airborne frame for the hop arc
+  const hop = airborne ? -13 : 0;
+  const baseTop = stage.clientHeight - 30 - (lineH * SPRITE_ROWS) + lineH; // feet on the branch
+  const x = col * CW;
+  owlEl.style.transform = `translate(${x}px, ${baseTop + hop}px)`;
+}
+
+function tick(){
+  if (pauseTicks > 0){ pauseTicks--; step++; render(); return; }
+  // advance a column only on the airborne (hop) frames, so each hop covers ground
+  if (step % 2 === 0){
+    col += dir;
+    if (col >= maxCol){ col = maxCol; dir = -1; pauseTicks = 3; }
+    else if (col <= minCol){ col = minCol; dir = 1; pauseTicks = 3; }
+  }
+  step++;
+  render();
+}
+
+render();
+setInterval(tick, 170);   // ~6 redraws/sec — TUI-like cadence
+
+// ---------- menu ----------
+const items = [
+  { k:"1", name:"Dashboard", desc:"cpu · mem · disk · net" },
+  { k:"2", name:"Processes", desc:"sorted by cpu" },
+  { k:"3", name:"Network",   desc:"per-interface i/o" },
+  { k:"4", name:"Sensors",   desc:"temps · battery" },
+  { k:"5", name:"Settings",  desc:"refresh · theme" },
+];
+let sel = 0;
+const menu = document.getElementById('menu');
+function drawMenu(){
+  menu.innerHTML = "";
+  items.forEach((it,i)=>{
+    const row=document.createElement('div');
+    row.className="row"+(i===sel?" sel":"");
+    row.innerHTML = `<span class="arrow">${i===sel?'›':' '}</span>`+
+      `<span class="k">${it.k}</span><span class="name">${it.name}</span>`+
+      `<span class="desc">${it.desc}</span>`;
+    menu.appendChild(row);
+  });
+}
+drawMenu();
+// gently cycle the selection so the screen feels alive
+setInterval(()=>{ sel=(sel+1)%items.length; drawMenu(); }, 2600);
+</script>
+</body>
+</html>

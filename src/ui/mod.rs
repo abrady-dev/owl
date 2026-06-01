@@ -13,6 +13,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         AppState::Dashboard => match app.current_view {
             View::Overview => draw_dashboard(frame, app),
             View::Help => draw_help(frame, app),
+            View::Downloads => draw_downloads(frame, app),
+            View::Apps => draw_apps(frame, app),
         },
     }
 }
@@ -72,6 +74,24 @@ fn draw_dashboard(frame: &mut Frame, app: &App) {
     widgets::render_thermal(frame, app, mid_cols[1]);
 
     widgets::render_power_health(frame, app, rows[3]);
+}
+
+fn draw_apps(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let main_block = widgets::make_main_block();
+    let inner = main_block.inner(area);
+    frame.render_widget(main_block, area);
+    widgets::render_apps(frame, app, inner);
+}
+
+fn draw_downloads(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let main_block = widgets::make_main_block();
+    let inner = main_block.inner(area);
+    frame.render_widget(main_block, area);
+
+    widgets::render_downloads(frame, app, inner);
 }
 
 fn draw_help(frame: &mut Frame, app: &App) {

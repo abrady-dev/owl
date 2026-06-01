@@ -1,5 +1,7 @@
+pub mod apps;
 pub mod cpu;
 pub mod disk;
+pub mod downloads;
 pub mod memory;
 pub mod network;
 pub mod power;
