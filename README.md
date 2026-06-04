@@ -6,9 +6,9 @@
 **owl · lean eyes on Linux · system monitor**
 
 A terminal monitor and cleaner for Linux, written in Rust. Real-time system
-stats in a clean TUI, plus an interactive app manager and downloads browser.
-The monitor reads directly from `/proc` and `/sys`; the cleaner integrates
-with the system package manager for app removal.
+stats in a clean TUI, plus an interactive app manager, downloads browser, and
+cache cleaner. The monitor reads directly from `/proc` and `/sys`; the cleaner
+integrates with the system package manager for app removal.
 
 ---
 
@@ -18,16 +18,17 @@ owl has two layers. The **monitor** (Overview) reads exclusively from the kernel
 no calls to external tools like `sensors`, `lsblk`, or `ip`. Every metric comes
 directly from a `/proc` or `/sys` file, parsed by hand in Rust.
 
-The **cleaner** (Apps, Downloads) adds interactive management: browse and remove
-installed applications via the system package manager, and delete files from
-`~/Downloads`. The cleaner calls the package manager only to resolve package
-ownership; the monitor itself never invokes external commands.
+The **cleaner** (Apps, Downloads, Clean) adds interactive management: browse and
+remove installed applications via the system package manager, delete files from
+`~/Downloads`, and reclaim disk space from system and dev tool caches. The
+cleaner calls the package manager only when needed; the monitor itself never
+invokes external commands.
 
 ---
 
 ## Views
 
-owl launches to a menu with four views selectable by number or `↑↓ Enter`.
+owl launches to a menu with five views selectable by number or `↑↓ Enter`.
 
 ### Overview — system monitor
 
@@ -66,6 +67,15 @@ Size-sorted view of `~/Downloads`. Press `/` to filter, `d` or `Enter` to queue
 deletion, `y` to confirm. Deletion is guarded — owl refuses to delete anything
 outside `~/Downloads`.
 
+### Clean — cache cleaner
+
+Scans for reclaimable disk space and shows each target with its current size.
+Targets are detected at runtime — only entries that exist and are non-empty
+appear. Covers: thumbnail cache, pip, npm, Cargo registry download cache,
+Gradle, Maven, user systemd journal, and pacman cache (requires `paccache`).
+Press `d` or `Enter` to queue a target, `y` to confirm. Shell-based targets
+(journal vacuum, pacman) drop out of the TUI, run the command, then return.
+
 ### Help — keybinding reference
 
 Full keybinding reference for all views.
@@ -100,7 +110,7 @@ Full keybinding reference for all views.
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
 | `Enter` | Open selected |
-| `1`–`4` | Jump to view by number |
+| `1`–`5` | Jump to view by number |
 
 **Overview**
 
@@ -116,6 +126,13 @@ Full keybinding reference for all views.
 | `d` / `Enter` | Queue removal / deletion |
 | `y` | Confirm removal / deletion |
 | `PageUp` / `PageDown` | Scroll 15 rows |
+
+**Clean**
+
+| Key | Action |
+|-----|--------|
+| `d` / `Enter` | Queue selected cache for cleaning |
+| `y` | Confirm clean |
 
 ---
 
@@ -144,9 +161,10 @@ Monitor collectors (`cpu`, `memory`, `disk`, `network`, `thermal`, `power`,
 against canned fixtures with no live system required. The thin `read()` wrapper
 that reads the actual file is separate.
 
-Cleaner collectors (`apps`, `downloads`) read the filesystem directly: `apps`
-scans `.desktop` directories and optionally shells out to the package manager
-to resolve ownership; `downloads` lists `~/Downloads` by size.
+Cleaner collectors (`apps`, `downloads`, `caches`) read the filesystem directly:
+`apps` scans `.desktop` directories and optionally shells out to the package
+manager to resolve ownership; `downloads` lists `~/Downloads` by size; `caches`
+walks known cache directories and records their sizes for the Clean view.
 
 **Source layout**
 
@@ -164,7 +182,8 @@ src/
 │   ├── power.rs     # /sys/class/power_supply
 │   ├── system.rs    # hostname, uptime, load averages, clock
 │   ├── apps.rs      # installed app list from .desktop files (system/Flatpak/Snap)
-│   └── downloads.rs # ~/Downloads directory scan, sorted by size
+│   ├── downloads.rs # ~/Downloads directory scan, sorted by size
+│   └── caches.rs    # cache directory scanner for the Clean view
 └── ui/
     ├── mod.rs        # layout engine
     └── widgets.rs    # one render fn per panel
@@ -216,16 +235,18 @@ The cleaning phase is designed with a strict safety contract:
 | Milestone | Target | Notes |
 |-----------|--------|-------|
 | v0.4 | App manager + downloads browser | Apps view (searchable list, removal via pacman/apt/dnf/zypper/flatpak/snap), Downloads view (size-sorted browser, guarded deletion) — **done** |
-| v0.5 | Safety primitives | Protected-path predicate, dry-run mode, audit log — no user features yet |
+| v0.7 | Cache cleaner | Clean view: thumbnail cache, journald vacuum, pacman `paccache`, dev tool download caches (`~/.npm/_cacache`, `~/.cargo/registry/`, `~/.gradle/caches`, `~/.m2/repository`, `~/.cache/pip`) — **done** |
+| v0.5 | Safety primitives | Dry-run mode, audit log — canonicalized path guard on Downloads deletion is live |
 | v0.6 | Read-only scanner | Walks targets, produces manifest with size preview; cannot delete |
-| v0.7 | Caches | Thumbnail cache, browser caches, journald vacuum, pacman `paccache` |
 | v0.8 | Orphan packages + configs | `pacman -Qtdq` orphans; `~/.config/<app>` / `~/.local/share/<app>` where app is gone |
 | v0.9 | Docker prune | `docker system prune` with size preview; gated on Docker presence |
 | v0.10 | User deny-list | `~/.config/owl/protect.toml` — paths owl must never touch |
 
 **Explicit non-goals:** page-cache dropping (`echo 3 > /proc/sys/vm/drop_caches`
 is a placebo), swappiness tuning, preload daemons, Flatpak/Snap leftover cleaning
-(heuristics are unreliable and blast radius is too large).
+(heuristics are unreliable and blast radius is too large), `node_modules/` or any
+project-local build artifact (not owl's job), `~/.cargo/bin` or other installed
+toolchain binaries.
 
 ---
 
@@ -270,6 +291,10 @@ cargo build --release      # build release binary at target/release/owl
 - **No panics in collectors.** Malformed `/proc` lines are silently skipped.
   Missing hardware (no battery, no hwmon sensors) gracefully hides the
   relevant panel.
+- **Deletion guards use canonicalized paths.** Before any file is deleted,
+  both the target path and the allowed root (`~/Downloads`) are resolved
+  through `fs::canonicalize` — so symlinks and `..` traversal cannot escape
+  the guarded directory.
 - **Truecolor throughout.** Accent `#3fdcdc` · TX magenta `#e06ce0` · healthy
   green `#5fd38a` · warn yellow `#e6c46b` · critical red `#e0685f`.
 

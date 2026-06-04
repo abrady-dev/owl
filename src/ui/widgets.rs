@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, BrowseMode, UninstallCmd, MENU_ITEMS};
+use crate::app::{App, AppMode, BrowseMode, CleanMode, UninstallCmd, MENU_ITEMS};
 use crate::collect::apps::AppSource;
 use crate::collect::system;
 use crate::splash;
@@ -1015,6 +1015,107 @@ pub fn render_downloads(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(hint_line), rows[3]);
 }
 
+// ── Clean ─────────────────────────────────────────────────────────────────────
+
+pub fn render_clean(f: &mut Frame, app: &App, area: Rect) {
+    let total: u64 = app.clean_targets.iter().map(|t| t.size_bytes).sum();
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    // Header
+    let header = if app.clean_targets.is_empty() {
+        " System caches   nothing found".to_owned()
+    } else {
+        format!(" System caches   {}  reclaimable", fmt_bytes(total))
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(header, Style::default().fg(TEXT_DIM)))),
+        rows[0],
+    );
+
+    // Target list
+    if app.clean_targets.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " no caches found on this system",
+                Style::default().fg(TEXT_FAINT),
+            )),
+            rows[1],
+        );
+    } else {
+        let lines: Vec<Line> = app
+            .clean_targets
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let selected = i == app.clean_idx;
+                let cursor = if selected { "▶" } else { " " };
+                let name_style = if selected {
+                    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT)
+                };
+                let path_style = if selected {
+                    Style::default().fg(TEXT_DIM)
+                } else {
+                    Style::default().fg(TEXT_FAINT)
+                };
+                let size_style = if selected {
+                    Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TEXT_DIM)
+                };
+                Line::from(vec![
+                    Span::styled(format!(" {} ", cursor), Style::default().fg(CYAN)),
+                    Span::styled(format!("{:<16}", entry.label), name_style),
+                    Span::styled(format!("{:<42}", entry.path_display), path_style),
+                    Span::styled(fmt_bytes(entry.size_bytes), size_style),
+                ])
+            })
+            .collect();
+        f.render_widget(Paragraph::new(Text::from(lines)), rows[1]);
+    }
+
+    // Hint / confirm bar
+    let hint_line = match &app.clean_mode {
+        CleanMode::Confirm(idx) => {
+            if let Some(target) = app.clean_targets.get(*idx) {
+                Line::from(vec![
+                    Span::styled(" Clean '", Style::default().fg(TEXT_DIM)),
+                    Span::styled(
+                        target.label,
+                        Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("'  ({})  ", fmt_bytes(target.size_bytes)),
+                        Style::default().fg(TEXT_DIM),
+                    ),
+                    Span::styled("[y]", Style::default().fg(RED)),
+                    Span::styled(" yes  ", Style::default().fg(TEXT_DIM)),
+                    Span::styled("[any other key]", Style::default().fg(CYAN_DIM)),
+                    Span::styled(" cancel", Style::default().fg(TEXT_FAINT)),
+                ])
+            } else {
+                Line::default()
+            }
+        }
+        CleanMode::Navigate => Line::from(vec![
+            keybind("↑↓"),
+            Span::styled(" navigate", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("d"),
+            Span::styled(" clean", Style::default().fg(TEXT_FAINT)),
+            dim_sep(),
+            keybind("Esc"),
+            Span::styled(" back", Style::default().fg(TEXT_FAINT)),
+        ]),
+    };
+    f.render_widget(Paragraph::new(hint_line), rows[2]);
+}
+
 // ── Help ──────────────────────────────────────────────────────────────────────
 
 pub fn render_help(f: &mut Frame, _app: &App, area: Rect) {
@@ -1028,7 +1129,8 @@ pub fn render_help(f: &mut Frame, _app: &App, area: Rect) {
         ("1",          "open Overview"),
         ("2",          "open Apps"),
         ("3",          "open Downloads"),
-        ("4",          "open Help"),
+        ("4",          "open Clean"),
+        ("5",          "open Help"),
         ("",           ""),
         ("Apps",       ""),
         ("/",          "search applications"),
@@ -1039,6 +1141,10 @@ pub fn render_help(f: &mut Frame, _app: &App, area: Rect) {
         ("/",          "search files"),
         ("d / Enter",  "delete selected file"),
         ("y",          "confirm delete"),
+        ("",           ""),
+        ("Clean",      ""),
+        ("d / Enter",  "queue selected cache for cleaning"),
+        ("y",          "confirm clean"),
     ];
 
     let rows = Layout::default()

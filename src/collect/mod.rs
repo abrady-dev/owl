@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod caches;
 pub mod cpu;
 pub mod disk;
 pub mod downloads;

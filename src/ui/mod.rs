@@ -11,10 +11,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.state {
         AppState::Menu => widgets::render_launch(frame, app, frame.area()),
         AppState::Dashboard => match app.current_view {
-            View::Overview => draw_dashboard(frame, app),
-            View::Help => draw_help(frame, app),
+            View::Overview  => draw_dashboard(frame, app),
+            View::Apps      => draw_apps(frame, app),
             View::Downloads => draw_downloads(frame, app),
-            View::Apps => draw_apps(frame, app),
+            View::Clean     => draw_clean(frame, app),
+            View::Help      => draw_help(frame, app),
         },
     }
 }
@@ -92,6 +93,14 @@ fn draw_downloads(frame: &mut Frame, app: &App) {
     frame.render_widget(main_block, area);
 
     widgets::render_downloads(frame, app, inner);
+}
+
+fn draw_clean(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let main_block = widgets::make_main_block();
+    let inner = main_block.inner(area);
+    frame.render_widget(main_block, area);
+    widgets::render_clean(frame, app, inner);
 }
 
 fn draw_help(frame: &mut Frame, app: &App) {

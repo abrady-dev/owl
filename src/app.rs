@@ -27,6 +27,7 @@ pub enum View {
     Help,
     Downloads,
     Apps,
+    Clean,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -61,11 +62,19 @@ pub enum AppMode {
     Confirm { name: String, cmd: UninstallCmd },
 }
 
+/// State machine for the Clean view.
+#[derive(Clone, PartialEq)]
+pub enum CleanMode {
+    Navigate,
+    Confirm(usize), // index of the target being confirmed
+}
+
 pub const MENU_ITEMS: &[(&str, &str, View)] = &[
-    ("Overview", "Full system dashboard", View::Overview),
-    ("Apps", "Remove installed applications", View::Apps),
+    ("Overview",  "Full system dashboard",        View::Overview),
+    ("Apps",      "Remove installed applications", View::Apps),
     ("Downloads", "Browse and delete ~/Downloads", View::Downloads),
-    ("Help", "Keybindings and usage", View::Help),
+    ("Clean",     "Free up disk space",            View::Clean),
+    ("Help",      "Keybindings and usage",         View::Help),
 ];
 
 pub struct App {
@@ -111,6 +120,11 @@ pub struct App {
     pub app_idx: usize,
     pub app_search: String,
     pub app_mode: AppMode,
+
+    // clean view
+    pub clean_targets: Vec<crate::collect::caches::CacheEntry>,
+    pub clean_idx: usize,
+    pub clean_mode: CleanMode,
 }
 
 impl App {
@@ -155,6 +169,9 @@ impl App {
             app_idx: 0,
             app_search: String::new(),
             app_mode: AppMode::Navigate,
+            clean_targets: Vec::new(),
+            clean_idx: 0,
+            clean_mode: CleanMode::Navigate,
         }
     }
 
@@ -237,6 +254,11 @@ impl App {
             self.app_search.clear();
             self.app_mode = AppMode::Navigate;
         }
+        if self.current_view == View::Clean {
+            self.clean_targets = crate::collect::caches::scan();
+            self.clean_idx = 0;
+            self.clean_mode = CleanMode::Navigate;
+        }
     }
 
     pub fn filtered_files(&self) -> Vec<&FileEntry> {
@@ -256,11 +278,15 @@ impl App {
     }
 
     fn run_delete(&mut self, path: &std::path::Path) -> io::Result<()> {
-        // Guard: path must be inside ~/Downloads
         let home = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
-        if !path.starts_with(home.join("Downloads")) {
+        // Canonicalize both sides so symlinks and `..` components can't escape
+        // ~/Downloads. We check the resolved real path, but delete the original
+        // path (so a symlink inside Downloads removes the link, not its target).
+        let downloads_real = std::fs::canonicalize(home.join("Downloads"))?;
+        let real = std::fs::canonicalize(path)?;
+        if !real.starts_with(&downloads_real) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "path is outside ~/Downloads",
@@ -524,6 +550,96 @@ impl App {
         Ok(false)
     }
 
+    fn handle_clean_key(
+        &mut self,
+        code: KeyCode,
+        terminal: &mut DefaultTerminal,
+    ) -> io::Result<bool> {
+        match self.clean_mode.clone() {
+            CleanMode::Confirm(idx) => {
+                if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
+                    self.clean_mode = CleanMode::Navigate;
+                    self.run_clean(idx, terminal)?;
+                } else {
+                    self.clean_mode = CleanMode::Navigate;
+                }
+            }
+            CleanMode::Navigate => match code {
+                KeyCode::Char('q') => return Ok(true),
+                KeyCode::Esc => self.state = AppState::Menu,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.clean_idx = self.clean_idx.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let max = self.clean_targets.len().saturating_sub(1);
+                    if self.clean_idx < max {
+                        self.clean_idx += 1;
+                    }
+                }
+                KeyCode::Char('d') | KeyCode::Enter => {
+                    if self.clean_idx < self.clean_targets.len() {
+                        self.clean_mode = CleanMode::Confirm(self.clean_idx);
+                    }
+                }
+                _ => {}
+            },
+        }
+        Ok(false)
+    }
+
+    fn run_clean(&mut self, idx: usize, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        use crate::collect::caches::CacheAction;
+
+        if idx >= self.clean_targets.len() {
+            return Ok(());
+        }
+
+        let action = self.clean_targets[idx].action.clone();
+
+        let success = match action {
+            CacheAction::RemoveDir(ref path) => {
+                std::fs::remove_dir_all(path).is_ok()
+            }
+            CacheAction::RemoveDirs(ref paths) => {
+                paths.iter().all(|p| !p.exists() || std::fs::remove_dir_all(p).is_ok())
+            }
+            CacheAction::Shell(ref args) => {
+                if args.is_empty() {
+                    return Ok(());
+                }
+                disable_raw_mode()?;
+                std::io::stdout().execute(LeaveAlternateScreen)?;
+
+                println!("\nRunning: {}\n", args.join(" "));
+                let result = std::process::Command::new(&args[0])
+                    .args(&args[1..])
+                    .status();
+
+                let ok = match result {
+                    Ok(s) if s.success() => true,
+                    Ok(s) => { println!("\n  exited with {}", s); false }
+                    Err(e) => { println!("\n  failed to run: {}", e); false }
+                };
+
+                println!("\nPress Enter to return to owl...");
+                std::io::stdin().read_line(&mut String::new())?;
+                std::io::stdout().execute(EnterAlternateScreen)?;
+                enable_raw_mode()?;
+                terminal.clear()?;
+                ok
+            }
+        };
+
+        if success {
+            self.clean_targets.remove(idx);
+            if !self.clean_targets.is_empty() && self.clean_idx >= self.clean_targets.len() {
+                self.clean_idx = self.clean_targets.len() - 1;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let tick_rate = Duration::from_millis(1000);
         let anim_rate = Duration::from_millis(130);
@@ -573,6 +689,11 @@ impl App {
                                     }
                                 } else if self.current_view == View::Apps {
                                     let quit = self.handle_apps_key(key.code, terminal)?;
+                                    if quit {
+                                        return Ok(());
+                                    }
+                                } else if self.current_view == View::Clean {
+                                    let quit = self.handle_clean_key(key.code, terminal)?;
                                     if quit {
                                         return Ok(());
                                     }
